@@ -21,33 +21,8 @@
 
 declare(strict_types=1);
 
-namespace pocketmine\item;
+namespace pocketmine\level\generator;
 
-use pocketmine\entity\effect\Effect;
-use pocketmine\entity\effect\EffectInstance;
-use function lcg_value;
+class InvalidGeneratorOptionsException extends \UnexpectedValueException{
 
-class RottenFlesh extends Food{
-
-	public function __construct(){
-		parent::__construct(self::ROTTEN_FLESH, 0, "Rotten Flesh");
-	}
-
-	public function getFoodRestore() : int{
-		return 4;
-	}
-
-	public function getSaturationRestore() : float{
-		return 0.8;
-	}
-
-	public function getAdditionalEffects() : array{
-		if(lcg_value() <= 0.8){
-			return [
-				new EffectInstance(Effect::getEffect(Effect::HUNGER), 600)
-			];
-		}
-
-		return [];
-	}
 }

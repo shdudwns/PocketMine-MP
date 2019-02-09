@@ -23,6 +23,8 @@ declare(strict_types=1);
 
 namespace pocketmine\entity;
 
+use pocketmine\entity\effect\Effect;
+use pocketmine\entity\effect\EffectInstance;
 use pocketmine\entity\projectile\ProjectileSource;
 use pocketmine\entity\utils\ExperienceUtils;
 use pocketmine\event\entity\EntityDamageEvent;
@@ -204,18 +206,13 @@ class Human extends Creature implements ProjectileSource, InventoryHolder{
 		$old = $attr->getValue();
 		$attr->setValue($new);
 
-		$reset = false;
 		// ranges: 18-20 (regen), 7-17 (none), 1-6 (no sprint), 0 (health depletion)
 		foreach([17, 6, 0] as $bound){
 			if(($old > $bound) !== ($new > $bound)){
-				$reset = true;
+				$this->foodTickTimer = 0;
 				break;
 			}
 		}
-		if($reset){
-			$this->foodTickTimer = 0;
-		}
-
 	}
 
 	public function getMaxFood() : float{
@@ -692,7 +689,7 @@ class Human extends Creature implements ProjectileSource, InventoryHolder{
 		$this->attributeMap->addAttribute(Attribute::getAttribute(Attribute::EXPERIENCE));
 	}
 
-	public function entityBaseTick(int $tickDiff = 1) : bool{
+	protected function entityBaseTick(int $tickDiff = 1) : bool{
 		$hasUpdate = parent::entityBaseTick($tickDiff);
 
 		$this->doFoodTick($tickDiff);

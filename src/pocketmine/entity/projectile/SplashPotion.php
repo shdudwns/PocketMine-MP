@@ -25,8 +25,8 @@ namespace pocketmine\entity\projectile;
 
 use pocketmine\block\Block;
 use pocketmine\block\BlockFactory;
+use pocketmine\entity\effect\EffectInstance;
 use pocketmine\entity\effect\InstantEffect;
-use pocketmine\entity\EffectInstance;
 use pocketmine\entity\Living;
 use pocketmine\event\entity\ProjectileHitBlockEvent;
 use pocketmine\event\entity\ProjectileHitEntityEvent;
@@ -89,7 +89,7 @@ class SplashPotion extends Throwable{
 			if(!$this->willLinger()){
 				foreach($this->level->getNearbyEntities($this->boundingBox->expandedCopy(4.125, 2.125, 4.125), $this) as $entity){
 					if($entity instanceof Living and $entity->isAlive()){
-						$distanceSquared = $entity->distanceSquared($this);
+						$distanceSquared = $entity->add(0, $entity->getEyeHeight(), 0)->distanceSquared($this);
 						if($distanceSquared > 16){ //4 blocks
 							continue;
 						}

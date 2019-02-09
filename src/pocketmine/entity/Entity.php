@@ -885,7 +885,7 @@ abstract class Entity extends Location implements Metadatable, EntityIds{
 		return $this->propertyManager;
 	}
 
-	public function entityBaseTick(int $tickDiff = 1) : bool{
+	protected function entityBaseTick(int $tickDiff = 1) : bool{
 		//TODO: check vehicles
 
 		$this->justCreated = false;
@@ -1303,10 +1303,6 @@ abstract class Entity extends Location implements Metadatable, EntityIds{
 			$this->motion->z != 0 or
 			!$this->onGround
 		);
-	}
-
-	public function canTriggerWalking() : bool{
-		return true;
 	}
 
 	public function resetFallDistance() : void{

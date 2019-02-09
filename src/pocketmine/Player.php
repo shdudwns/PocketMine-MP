@@ -26,11 +26,13 @@ namespace pocketmine;
 use pocketmine\block\Bed;
 use pocketmine\block\Block;
 use pocketmine\block\BlockFactory;
+use pocketmine\block\UnknownBlock;
 use pocketmine\command\Command;
 use pocketmine\command\CommandSender;
-use pocketmine\entity\Effect;
-use pocketmine\entity\EffectInstance;
+use pocketmine\entity\effect\Effect;
+use pocketmine\entity\effect\EffectInstance;
 use pocketmine\entity\Entity;
+use pocketmine\entity\EntityFactory;
 use pocketmine\entity\Human;
 use pocketmine\entity\object\ItemEntity;
 use pocketmine\entity\projectile\Arrow;
@@ -82,6 +84,7 @@ use pocketmine\item\WritableBook;
 use pocketmine\item\WrittenBook;
 use pocketmine\lang\TextContainer;
 use pocketmine\lang\TranslationContainer;
+use pocketmine\level\ChunkListener;
 use pocketmine\level\ChunkLoader;
 use pocketmine\level\format\Chunk;
 use pocketmine\level\Level;
@@ -157,6 +160,7 @@ use function min;
 use function preg_match;
 use function round;
 use function spl_object_id;
+use function sqrt;
 use function strlen;
 use function strpos;
 use function strtolower;
@@ -171,7 +175,7 @@ use const PHP_INT_MAX;
 /**
  * Main class that handles networking, recovery, and packet sending to the server part
  */
-class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
+class Player extends Human implements CommandSender, ChunkLoader, ChunkListener, IPlayer{
 
 	/**
 	 * Checks a supplied username and checks it is valid.
@@ -410,8 +414,11 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 	}
 
 	public function setFlying(bool $value){
-		$this->flying = $value;
-		$this->sendSettings();
+		if($this->flying !== $value){
+			$this->flying = $value;
+			$this->resetFallDistance();
+			$this->sendSettings();
+		}
 	}
 
 	public function isFlying() : bool{
@@ -914,6 +921,7 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 			unset($this->usedChunks[$index]);
 		}
 		$level->unregisterChunkLoader($this, $x, $z);
+		$level->unregisterChunkListener($this, $x, $z);
 		unset($this->loadQueue[$index]);
 	}
 
@@ -970,7 +978,8 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 			++$count;
 
 			$this->usedChunks[$index] = false;
-			$this->level->registerChunkLoader($this, $X, $Z, false);
+			$this->level->registerChunkLoader($this, $X, $Z, true);
+			$this->level->registerChunkListener($this, $X, $Z);
 
 			if(!$this->level->populateChunk($X, $Z)){
 				continue;
@@ -1016,18 +1025,9 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 		}
 	}
 
-	protected function orderChunks() : void{
-		if(!$this->isConnected() or $this->viewDistance === -1){
-			return;
-		}
-
-		Timings::$playerChunkOrderTimer->startTiming();
-
+	protected function selectChunks() : \Generator{
 		$radius = $this->server->getAllowedViewDistance($this->viewDistance);
 		$radiusSquared = $radius ** 2;
-
-		$newOrder = [];
-		$unloadChunks = $this->usedChunks;
 
 		$centerX = $this->getFloorX() >> 4;
 		$centerZ = $this->getFloorZ() >> 4;
@@ -1041,56 +1041,43 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 				//If the chunk is in the radius, others at the same offsets in different quadrants are also guaranteed to be.
 
 				/* Top right quadrant */
-				if(!isset($this->usedChunks[$index = Level::chunkHash($centerX + $x, $centerZ + $z)]) or $this->usedChunks[$index] === false){
-					$newOrder[$index] = true;
-				}
-				unset($unloadChunks[$index]);
-
+				yield Level::chunkHash($centerX + $x, $centerZ + $z);
 				/* Top left quadrant */
-				if(!isset($this->usedChunks[$index = Level::chunkHash($centerX - $x - 1, $centerZ + $z)]) or $this->usedChunks[$index] === false){
-					$newOrder[$index] = true;
-				}
-				unset($unloadChunks[$index]);
-
+				yield Level::chunkHash($centerX - $x - 1, $centerZ + $z);
 				/* Bottom right quadrant */
-				if(!isset($this->usedChunks[$index = Level::chunkHash($centerX + $x, $centerZ - $z - 1)]) or $this->usedChunks[$index] === false){
-					$newOrder[$index] = true;
-				}
-				unset($unloadChunks[$index]);
-
-
+				yield Level::chunkHash($centerX + $x, $centerZ - $z - 1);
 				/* Bottom left quadrant */
-				if(!isset($this->usedChunks[$index = Level::chunkHash($centerX - $x - 1, $centerZ - $z - 1)]) or $this->usedChunks[$index] === false){
-					$newOrder[$index] = true;
-				}
-				unset($unloadChunks[$index]);
+				yield Level::chunkHash($centerX - $x - 1, $centerZ - $z - 1);
 
 				if($x !== $z){
 					/* Top right quadrant mirror */
-					if(!isset($this->usedChunks[$index = Level::chunkHash($centerX + $z, $centerZ + $x)]) or $this->usedChunks[$index] === false){
-						$newOrder[$index] = true;
-					}
-					unset($unloadChunks[$index]);
-
+					yield Level::chunkHash($centerX + $z, $centerZ + $x);
 					/* Top left quadrant mirror */
-					if(!isset($this->usedChunks[$index = Level::chunkHash($centerX - $z - 1, $centerZ + $x)]) or $this->usedChunks[$index] === false){
-						$newOrder[$index] = true;
-					}
-					unset($unloadChunks[$index]);
-
+					yield Level::chunkHash($centerX - $z - 1, $centerZ + $x);
 					/* Bottom right quadrant mirror */
-					if(!isset($this->usedChunks[$index = Level::chunkHash($centerX + $z, $centerZ - $x - 1)]) or $this->usedChunks[$index] === false){
-						$newOrder[$index] = true;
-					}
-					unset($unloadChunks[$index]);
-
+					yield Level::chunkHash($centerX + $z, $centerZ - $x - 1);
 					/* Bottom left quadrant mirror */
-					if(!isset($this->usedChunks[$index = Level::chunkHash($centerX - $z - 1, $centerZ - $x - 1)]) or $this->usedChunks[$index] === false){
-						$newOrder[$index] = true;
-					}
-					unset($unloadChunks[$index]);
+					yield Level::chunkHash($centerX - $z - 1, $centerZ - $x - 1);
 				}
 			}
+		}
+	}
+
+	protected function orderChunks() : void{
+		if(!$this->isConnected() or $this->viewDistance === -1){
+			return;
+		}
+
+		Timings::$playerChunkOrderTimer->startTiming();
+
+		$newOrder = [];
+		$unloadChunks = $this->usedChunks;
+
+		foreach($this->selectChunks() as $hash){
+			if(!isset($this->usedChunks[$hash]) or $this->usedChunks[$hash] === false){
+				$newOrder[$hash] = true;
+			}
+			unset($unloadChunks[$hash]);
 		}
 
 		foreach($unloadChunks as $index => $bool){
@@ -1331,20 +1318,18 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 
 		$this->allowFlight = $this->isCreative();
 		if($this->isSpectator()){
-			$this->flying = true;
+			$this->setFlying(true);
 			$this->keepMovement = true;
 			$this->despawnFromAll();
 		}else{
 			$this->keepMovement = $this->allowMovementCheats;
 			if($this->isSurvival()){
-				$this->flying = false;
+				$this->setFlying(false);
 			}
 			$this->spawnToAll();
 		}
 
-		$this->resetFallDistance();
-
-		if(!$client){ //GameMode changed by server, do not send for client changes
+		if(!$client){ //Gamemode changed by server, do not send for client changes
 			$this->sendGamemode();
 		}else{
 			Command::broadcastCommandMessage($this, new TranslationContainer("commands.gamemode.success.self", [GameMode::toTranslation($gm)]));
@@ -1563,7 +1548,7 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 				}else{
 					$this->broadcastMovement();
 
-					$distance = $from->distance($to);
+					$distance = sqrt((($from->x - $to->x) ** 2) + (($from->z - $to->z) ** 2));
 					//TODO: check swimming (adds 0.015 exhaustion in MCPE)
 					if($this->isSprinting()){
 						$this->exhaust(0.1 * $distance, PlayerExhaustEvent::CAUSE_SPRINTING);
@@ -1586,6 +1571,12 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 		}
 
 		$this->newPosition = null;
+	}
+
+	public function fall(float $fallDistance) : void{
+		if(!$this->flying){
+			parent::fall($fallDistance);
+		}
 	}
 
 	public function jump() : void{
@@ -1838,21 +1829,38 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 	public function _actuallyConstruct(){
 		$namedtag = $this->server->getOfflinePlayerData($this->username); //TODO: make this async
 
-		if(($level = $this->server->getLevelManager()->getLevelByName($namedtag->getString("Level", "", true))) === null){
-			/** @var Level $level */
-			$level = $this->server->getLevelManager()->getDefaultLevel(); //TODO: default level may be null
+		$spawnReset = false;
 
-			$spawnLocation = $level->getSafeSpawn();
-			$namedtag->setTag(new ListTag("Pos", [
-				new DoubleTag("", $spawnLocation->x),
-				new DoubleTag("", $spawnLocation->y),
-				new DoubleTag("", $spawnLocation->z)
-			]));
+		if($namedtag !== null and ($level = $this->server->getLevelManager()->getLevelByName($namedtag->getString("Level", "", true))) !== null){
+			/** @var float[] $pos */
+			$pos = $namedtag->getListTag("Pos")->getAllValues();
+			$spawn = new Vector3($pos[0], $pos[1], $pos[2]);
+		}else{
+			$level = $this->server->getLevelManager()->getDefaultLevel(); //TODO: default level might be null
+			$spawn = $level->getSpawnLocation();
+			$spawnReset = true;
 		}
 
-		/** @var float[] $pos */
-		$pos = $namedtag->getListTag("Pos")->getAllValues();
-		$level->registerChunkLoader($this, ((int) floor($pos[0])) >> 4, ((int) floor($pos[2])) >> 4, true);
+		//load the spawn chunk so we can see the terrain
+		$level->registerChunkLoader($this, $spawn->getFloorX() >> 4, $spawn->getFloorZ() >> 4, true);
+		$level->registerChunkListener($this, $spawn->getFloorX() >> 4, $spawn->getFloorZ() >> 4);
+		if($spawnReset){
+			$spawn = $level->getSafeSpawn($spawn);
+		}
+
+		if($namedtag === null){
+			$namedtag = EntityFactory::createBaseNBT($spawn);
+
+			$namedtag->setByte("OnGround", 1); //TODO: this hack is needed for new players in-air ticks - they don't get detected as on-ground until they move
+			//TODO: old code had a TODO for SpawnForced
+
+		}elseif($spawnReset){
+			$namedtag->setTag(new ListTag("Pos", [
+				new DoubleTag("", $spawn->x),
+				new DoubleTag("", $spawn->y),
+				new DoubleTag("", $spawn->z)
+			]));
+		}
 
 		parent::__construct($level, $namedtag);
 		$ev = new PlayerLoginEvent($this, "Plugin reason");
@@ -2126,6 +2134,9 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 
 	public function pickBlock(Vector3 $pos, bool $addTileNBT) : bool{
 		$block = $this->level->getBlock($pos);
+		if($block instanceof UnknownBlock){
+			return true;
+		}
 
 		$item = $block->getPickedItem();
 		if($addTileNBT){
@@ -2394,8 +2405,9 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 		$ev->call();
 		if($ev->isCancelled()){
 			$this->sendSettings();
-		}else{
-			$this->setFlying($fly);
+		}else{ //don't use setFlying() here, to avoid feedback loops
+			$this->flying = $fly;
+			$this->resetFallDistance();
 		}
 	}
 
@@ -2872,6 +2884,7 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 				foreach($this->usedChunks as $index => $d){
 					Level::getXZ($index, $chunkX, $chunkZ);
 					$this->level->unregisterChunkLoader($this, $chunkX, $chunkZ);
+					$this->level->unregisterChunkListener($this, $chunkX, $chunkZ);
 					foreach($this->level->getChunkEntities($chunkX, $chunkZ) as $entity){
 						$entity->despawnFrom($this);
 					}

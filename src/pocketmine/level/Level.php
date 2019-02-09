@@ -179,6 +179,9 @@ class Level implements ChunkManager, Metadatable{
 	/** @var Player[][] */
 	private $playerLoaders = [];
 
+	/** @var ChunkListener[][] */
+	private $chunkListeners = [];
+
 	/** @var ClientboundPacket[][] */
 	private $chunkPackets = [];
 	/** @var ClientboundPacket[] */
@@ -367,6 +370,7 @@ class Level implements ChunkManager, Metadatable{
 
 		$this->server->getLogger()->info($this->server->getLanguage()->translateString("pocketmine.level.preparing", [$this->displayName]));
 		$this->generator = GeneratorManager::getGenerator($this->provider->getLevelData()->getGenerator());
+		//TODO: validate generator options
 
 		$this->folderName = $name;
 
@@ -560,7 +564,10 @@ class Level implements ChunkManager, Metadatable{
 	}
 
 	/**
-	 * Gets the players being used in a specific chunk
+	 * @deprecated WARNING: This function has a misleading name. Contrary to what the name might imply, this function
+	 * DOES NOT return players who are IN a chunk, rather, it returns players who can SEE the chunk.
+	 *
+	 * Returns a list of players who have the target chunk within their view distance.
 	 *
 	 * @param int $chunkX
 	 * @param int $chunkZ
@@ -677,8 +684,53 @@ class Level implements ChunkManager, Metadatable{
 	}
 
 	/**
-	 * WARNING: Do not use this, it's only for internal use.
-	 * Changes to this function won't be recorded on the version.
+	 * Registers a listener to receive events on a chunk.
+	 *
+	 * @param ChunkListener $listener
+	 * @param int           $chunkX
+	 * @param int           $chunkZ
+	 */
+	public function registerChunkListener(ChunkListener $listener, int $chunkX, int $chunkZ) : void{
+		$hash = Level::chunkHash($chunkX, $chunkZ);
+		if(isset($this->chunkListeners[$hash])){
+			$this->chunkListeners[$hash][spl_object_id($listener)] = $listener;
+		}else{
+			$this->chunkListeners[$hash] = [spl_object_id($listener) => $listener];
+		}
+	}
+
+	/**
+	 * Unregisters a chunk listener previously registered.
+	 * @see Level::registerChunkListener()
+	 *
+	 * @param ChunkListener $listener
+	 * @param int           $chunkX
+	 * @param int           $chunkZ
+	 */
+	public function unregisterChunkListener(ChunkListener $listener, int $chunkX, int $chunkZ) : void{
+		$hash = Level::chunkHash($chunkX, $chunkZ);
+		if(isset($this->chunkListeners[$hash])){
+			unset($this->chunkListeners[$hash][spl_object_id($listener)]);
+			if(empty($this->chunkListeners[$hash])){
+				unset($this->chunkListeners[$hash]);
+			}
+		}
+	}
+
+	/**
+	 * Returns all the listeners attached to this chunk.
+	 *
+	 * @param int $chunkX
+	 * @param int $chunkZ
+	 *
+	 * @return ChunkListener[]
+	 */
+	public function getChunkListeners(int $chunkX, int $chunkZ) : array{
+		return $this->chunkListeners[Level::chunkHash($chunkX, $chunkZ)] ?? [];
+	}
+
+	/**
+	 * @internal
 	 *
 	 * @param Player ...$targets If empty, will send to all players in the level.
 	 */
@@ -698,8 +750,7 @@ class Level implements ChunkManager, Metadatable{
 	}
 
 	/**
-	 * WARNING: Do not use this, it's only for internal use.
-	 * Changes to this function won't be recorded on the version.
+	 * @internal
 	 *
 	 * @param int $currentTick
 	 *
@@ -1537,8 +1588,8 @@ class Level implements ChunkManager, Metadatable{
 		}
 		$this->changedBlocks[$chunkHash][$relativeBlockHash] = $block;
 
-		foreach($this->getChunkLoaders($x >> 4, $z >> 4) as $loader){
-			$loader->onBlockChanged($block);
+		foreach($this->getChunkListeners($x >> 4, $z >> 4) as $listener){
+			$listener->onBlockChanged($block);
 		}
 
 		if($update){
@@ -2227,8 +2278,8 @@ class Level implements ChunkManager, Metadatable{
 				if(($oldChunk === null or !$oldChunk->isPopulated()) and $chunk->isPopulated()){
 					(new ChunkPopulateEvent($this, $chunk))->call();
 
-					foreach($this->getChunkLoaders($x, $z) as $loader){
-						$loader->onChunkPopulated($chunk);
+					foreach($this->getChunkListeners($x, $z) as $listener){
+						$listener->onChunkPopulated($chunk);
 					}
 				}
 			}
@@ -2247,9 +2298,9 @@ class Level implements ChunkManager, Metadatable{
 	 * @param int        $chunkX
 	 * @param int        $chunkZ
 	 * @param Chunk|null $chunk
-	 * @param bool       $unload
+	 * @param bool       $deleteEntitiesAndTiles Whether to delete entities and tiles on the old chunk, or transfer them to the new one
 	 */
-	public function setChunk(int $chunkX, int $chunkZ, Chunk $chunk = null, bool $unload = true){
+	public function setChunk(int $chunkX, int $chunkZ, Chunk $chunk = null, bool $deleteEntitiesAndTiles = true){
 		if($chunk === null){
 			return;
 		}
@@ -2260,7 +2311,16 @@ class Level implements ChunkManager, Metadatable{
 		$chunkHash = Level::chunkHash($chunkX, $chunkZ);
 		$oldChunk = $this->getChunk($chunkX, $chunkZ, false);
 		if($oldChunk !== null and $oldChunk !== $chunk){
-			if($unload){
+			if($deleteEntitiesAndTiles){
+				foreach($oldChunk->getEntities() as $player){
+					if(!($player instanceof Player)){
+						continue;
+					}
+					$chunk->addEntity($player);
+					$oldChunk->removeEntity($player);
+					$player->chunk = $chunk;
+				}
+				//TODO: this causes chunkloaders to receive false "unloaded" notifications
 				$this->unloadChunk($chunkX, $chunkZ, false, false);
 			}else{
 				foreach($oldChunk->getEntities() as $entity){
@@ -2290,8 +2350,8 @@ class Level implements ChunkManager, Metadatable{
 		if(!$this->isChunkInUse($chunkX, $chunkZ)){
 			$this->unloadChunkRequest($chunkX, $chunkZ);
 		}else{
-			foreach($this->getChunkLoaders($chunkX, $chunkZ) as $loader){
-				$loader->onChunkChanged($chunk);
+			foreach($this->getChunkListeners($chunkX, $chunkZ) as $listener){
+				$listener->onChunkChanged($chunk);
 			}
 		}
 	}
@@ -2606,10 +2666,11 @@ class Level implements ChunkManager, Metadatable{
 		}
 
 		if($this->isChunkInUse($x, $z)){
-			foreach($this->getChunkLoaders($x, $z) as $loader){
-				$loader->onChunkLoaded($chunk);
+			foreach($this->getChunkListeners($x, $z) as $listener){
+				$listener->onChunkLoaded($chunk);
 			}
 		}else{
+			$this->server->getLogger()->debug("Newly loaded chunk $x $z has no loaders registered, will be unloaded at next available opportunity");
 			$this->unloadChunkRequest($x, $z);
 		}
 
@@ -2619,7 +2680,7 @@ class Level implements ChunkManager, Metadatable{
 	}
 
 	private function queueUnloadChunk(int $x, int $z){
-		$this->unloadQueue[$index = Level::chunkHash($x, $z)] = microtime(true);
+		$this->unloadQueue[Level::chunkHash($x, $z)] = microtime(true);
 	}
 
 	public function unloadChunkRequest(int $x, int $z, bool $safe = true){
@@ -2666,8 +2727,8 @@ class Level implements ChunkManager, Metadatable{
 				}
 			}
 
-			foreach($this->getChunkLoaders($x, $z) as $loader){
-				$loader->onChunkUnloaded($chunk);
+			foreach($this->getChunkListeners($x, $z) as $listener){
+				$listener->onChunkUnloaded($chunk);
 			}
 
 			$chunk->onUnload();

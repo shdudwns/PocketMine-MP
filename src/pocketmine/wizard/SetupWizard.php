@@ -31,8 +31,8 @@ use pocketmine\lang\Language;
 use pocketmine\lang\LanguageNotFoundException;
 use pocketmine\utils\Config;
 use pocketmine\utils\Internet;
+use pocketmine\utils\InternetException;
 use function fgets;
-use function gethostbyname;
 use function sleep;
 use function strtolower;
 use function trim;
@@ -75,10 +75,6 @@ class SetupWizard{
 			}
 		}while($lang === null);
 
-		$config = new Config(\pocketmine\DATA . "server.properties", Config::PROPERTIES);
-		$config->set("language", $lang);
-		$config->save();
-
 		$this->lang = new Language($lang);
 
 		$this->message($this->lang->get("language_has_been_selected"));
@@ -86,6 +82,11 @@ class SetupWizard{
 		if(!$this->showLicense()){
 			return false;
 		}
+
+		//this has to happen here to prevent user avoiding agreeing to license
+		$config = new Config(\pocketmine\DATA . "server.properties", Config::PROPERTIES);
+		$config->set("language", $lang);
+		$config->save();
 
 		if(strtolower($this->getInput($this->lang->get("skip_installer"), "n", "y/N")) === "y"){
 			return true;
@@ -204,7 +205,11 @@ LICENSE;
 		if($externalIP === false){
 			$externalIP = "unknown (server offline)";
 		}
-		$internalIP = gethostbyname(trim(`hostname`));
+		try{
+			$internalIP = Internet::getInternalIP();
+		}catch(InternetException $e){
+			$internalIP = "unknown (" . $e->getMessage() . ")";
+		}
 
 		$this->error($this->lang->translateString("ip_warning", ["EXTERNAL_IP" => $externalIP, "INTERNAL_IP" => $internalIP]));
 		$this->error($this->lang->get("ip_confirm"));
